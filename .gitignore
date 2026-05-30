@@ -1,0 +1,6 @@
+afce.pro.user
+*.qm
+*.bak
+*.orig
+build
+afce

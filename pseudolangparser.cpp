@@ -501,6 +501,101 @@ bool PseudoLangParser::parseStatement(const QString &source, int &pos,
         return true;
     }
 
+    // --- comment "text" (ГОСТ 19.701-90 п.3.4.3) ---
+    if (keywordAt(source, pos, "comment")) {
+        pos += 7;
+        skipWhitespace(source, pos);
+        if (pos >= source.length() || source[pos] != '"') {
+            if (errorOut) *errorOut = "Expected quoted string after 'comment'";
+            return false;
+        }
+        int start = pos + 1;
+        int end = start;
+        while (end < source.length() && source[end] != '"') {
+            if (source[end] == '\\') ++end;
+            ++end;
+        }
+        if (end >= source.length()) {
+            if (errorOut) *errorOut = "Unterminated string in 'comment'";
+            return false;
+        }
+        QString text = source.mid(start, end - start);
+        pos = end + 1;
+        // Expect ';'
+        skipWhitespace(source, pos);
+        if (pos < source.length() && source[pos] == ';')
+            ++pos;
+
+        QDomElement el = doc.createElement("comment");
+        el.setAttribute("text", text.trimmed());
+        parentBranch.appendChild(el);
+        return true;
+    }
+
+    // Helper lambda for quoted-string block types ("type" "text";)
+    // Handles: data, stored_data, document, manual_input, display,
+    //          manual_op, parallel, connector, ram, seq_access,
+    //          direct_access, card, paper_tape
+    {
+        static const struct { const char *keyword; const char *elem; } tbl[] = {
+            {"data", "data"},
+            {"stored_data", "stored_data"},
+            {"document", "document"},
+            {"manual_input", "manual_input"},
+            {"display", "display"},
+            {"manual_op", "manual_op"},
+            {"parallel", "parallel"},
+            {"connector", "connector"},
+            {"ram", "ram"},
+            {"seq_access", "seq_access"},
+            {"direct_access", "direct_access"},
+            {"card", "card"},
+            {"paper_tape", "paper_tape"},
+        };
+        for (unsigned i = 0; i < sizeof(tbl)/sizeof(tbl[0]); ++i) {
+            if (keywordAt(source, pos, tbl[i].keyword)) {
+                pos += qstrlen(tbl[i].keyword);
+                skipWhitespace(source, pos);
+                if (pos >= source.length() || source[pos] != '"') {
+                    if (errorOut) *errorOut = QString("Expected quoted string after '%1'").arg(tbl[i].keyword);
+                    return false;
+                }
+                int start = pos + 1;
+                int end = start;
+                while (end < source.length() && source[end] != '"') {
+                    if (source[end] == '\\') ++end;
+                    ++end;
+                }
+                if (end >= source.length()) {
+                    if (errorOut) *errorOut = QString("Unterminated string in '%1'").arg(tbl[i].keyword);
+                    return false;
+                }
+                QString text = source.mid(start, end - start);
+                pos = end + 1;
+                skipWhitespace(source, pos);
+                if (pos < source.length() && source[pos] == ';')
+                    ++pos;
+
+                QDomElement el = doc.createElement(tbl[i].elem);
+                el.setAttribute("text", text.trimmed());
+                parentBranch.appendChild(el);
+                return true;
+            }
+        }
+    }
+
+    // --- ellipsis (без текста, только три точки) ---
+    if (keywordAt(source, pos, "ellipsis")) {
+        pos += 8;
+        skipWhitespace(source, pos);
+        if (pos < source.length() && source[pos] == ';')
+            ++pos;
+        QDomElement el = doc.createElement("ellipsis");
+        el.setAttribute("text", "...");
+        parentBranch.appendChild(el);
+        return true;
+    }
+
     // Unknown statement — skip until ';' or end of line for error
     {
         QString rest = restOfLine(source, pos);

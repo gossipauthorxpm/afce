@@ -22,8 +22,9 @@
           process "temp = temp->nextDelivery";
       }
 
-      process "free(temp->nextDelivery->delivery)";
-      process "free(temp->nextDelivery)";
+      // Освобождение памяти — длинные операции требуют пояснения
+      process "Освободить память последнего узла";
+      comment "free(temp->nextDelivery->delivery) и free(temp->nextDelivery)";
       process "temp->nextDelivery = NULL";
   }
 @stop_scheme

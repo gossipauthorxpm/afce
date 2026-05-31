@@ -166,7 +166,6 @@ void MainWindow::setupUi()
     createToolBar();
     QWidget *body = new QWidget;
     QWidget *zoomPanel = new QWidget;
-    zoomPanel->setMinimumHeight(18);
     saScheme = new AfcScrollArea();
     QPalette pal = saScheme->palette();
     pal.setColor(QPalette::Window, pal.color(QPalette::Base));
@@ -180,9 +179,9 @@ void MainWindow::setupUi()
     zoomSlider = new QSlider(Qt::Horizontal, zoomPanel);
     zoomLabel = new QLabel;
     QHBoxLayout *zoomLayout= new QHBoxLayout;
-    zoomLayout->addStretch();
     zoomLayout->addWidget(zoomLabel);
     zoomLayout->addWidget(zoomSlider);
+    zoomLayout->addStretch();
     zoomPanel->setLayout(zoomLayout);
     zoomSlider->setRange(1, 20);
     zoomSlider->setSingleStep(1);
@@ -272,6 +271,20 @@ void MainWindow::createToolbox()
     tbIo = createToolButton(":/images/io.png");
     tbOu = createToolButton(":/images/ou.png");
     tbForCStyle = createToolButton(":/images/forc.png");
+    tbData = createToolButton(":/images/simple.png");
+    tbStoredData = createToolButton(":/images/simple.png");
+    tbDocument = createToolButton(":/images/simple.png");
+    tbManualInput = createToolButton(":/images/io.png");
+    tbDisplay = createToolButton(":/images/simple.png");
+    tbManualOp = createToolButton(":/images/simple.png");
+    tbParallel = createToolButton(":/images/simple.png");
+    tbConnector = createToolButton(":/images/simple.png");
+    tbEllipsis = createToolButton(":/images/simple.png");
+    tbRam = createToolButton(":/images/simple.png");
+    tbSeqAccess = createToolButton(":/images/simple.png");
+    tbDirectAccess = createToolButton(":/images/simple.png");
+    tbCard = createToolButton(":/images/simple.png");
+    tbPaperTape = createToolButton(":/images/simple.png");
 
     connect(tbArrow, SIGNAL(pressed()), this, SLOT(slotToolArrow()));
     connect(tbProcess, SIGNAL(pressed()), this, SLOT(slotToolProcess()));
@@ -283,6 +296,20 @@ void MainWindow::createToolbox()
     connect(tbIo, SIGNAL(pressed()), this, SLOT(slotToolIo()));
     connect(tbOu, SIGNAL(pressed()), this, SLOT(slotToolOu()));
     connect(tbForCStyle, SIGNAL(pressed()), this, SLOT(slotToolForCStyle()));
+    connect(tbData, SIGNAL(pressed()), this, SLOT(slotToolData()));
+    connect(tbStoredData, SIGNAL(pressed()), this, SLOT(slotToolStoredData()));
+    connect(tbDocument, SIGNAL(pressed()), this, SLOT(slotToolDocument()));
+    connect(tbManualInput, SIGNAL(pressed()), this, SLOT(slotToolManualInput()));
+    connect(tbDisplay, SIGNAL(pressed()), this, SLOT(slotToolDisplay()));
+    connect(tbManualOp, SIGNAL(pressed()), this, SLOT(slotToolManualOp()));
+    connect(tbParallel, SIGNAL(pressed()), this, SLOT(slotToolParallel()));
+    connect(tbConnector, SIGNAL(pressed()), this, SLOT(slotToolConnector()));
+    connect(tbEllipsis, SIGNAL(pressed()), this, SLOT(slotToolEllipsis()));
+    connect(tbRam, SIGNAL(pressed()), this, SLOT(slotToolRam()));
+    connect(tbSeqAccess, SIGNAL(pressed()), this, SLOT(slotToolSeqAccess()));
+    connect(tbDirectAccess, SIGNAL(pressed()), this, SLOT(slotToolDirectAccess()));
+    connect(tbCard, SIGNAL(pressed()), this, SLOT(slotToolCard()));
+    connect(tbPaperTape, SIGNAL(pressed()), this, SLOT(slotToolPaperTape()));
 
     toolsWidget = new QFrame;
     toolsWidget->setFrameStyle(QFrame::StyledPanel | QFrame::Plain);
@@ -298,6 +325,24 @@ void MainWindow::createToolbox()
     tl->addWidget(tbWhilePre);
     tl->addWidget(tbWhilePost);
     tl->addWidget(tbForCStyle);
+    // Секция: Символы данных (ГОСТ 19.701-90)
+    tl->addWidget(tbData);
+    tl->addWidget(tbStoredData);
+    tl->addWidget(tbDocument);
+    tl->addWidget(tbManualInput);
+    tl->addWidget(tbDisplay);
+    // Секция: Символы процесса
+    tl->addWidget(tbManualOp);
+    tl->addWidget(tbParallel);
+    // Секция: Специальные символы
+    tl->addWidget(tbConnector);
+    tl->addWidget(tbEllipsis);
+    // Секция: Носители данных
+    tl->addWidget(tbRam);
+    tl->addWidget(tbSeqAccess);
+    tl->addWidget(tbDirectAccess);
+    tl->addWidget(tbCard);
+    tl->addWidget(tbPaperTape);
     tl->addStretch();
     toolsWidget->setLayout(tl);
     dockTools->setWidget(toolsWidget);
@@ -323,6 +368,20 @@ void MainWindow::retranslateUi()
     tbIo->setText(tr("Input"));
     tbOu->setText(tr("Output"));
     tbForCStyle->setText(tr("FOR loop (C/C++)"));
+    tbData->setText(tr("Data"));
+    tbStoredData->setText(tr("Stored Data"));
+    tbDocument->setText(tr("Document"));
+    tbManualInput->setText(tr("Manual Input"));
+    tbDisplay->setText(tr("Display"));
+    tbManualOp->setText(tr("Manual Op"));
+    tbParallel->setText(tr("Parallel"));
+    tbConnector->setText(tr("Connector"));
+    tbEllipsis->setText(tr("Ellipsis"));
+    tbRam->setText(tr("RAM"));
+    tbSeqAccess->setText(tr("Seq. Access"));
+    tbDirectAccess->setText(tr("Direct Access"));
+    tbCard->setText(tr("Card"));
+    tbPaperTape->setText(tr("Paper Tape"));
     actExit->setText(tr("E&xit"));
     actExit->setStatusTip(tr("Exit from program"));
     actOpen->setText(tr("&Open..."));
@@ -1150,7 +1209,14 @@ void MainWindow::slotEditBlock(QBlock *aBlock)
         buttonLayout->addWidget(btnOk);
         buttonLayout->addWidget(btnCancel);
         dlg.setLayout(mainLayout);
-        if(aBlock->type() == "process" || aBlock->type() == "if" || aBlock->type() == "pre" || aBlock->type() == "post" )
+        if(aBlock->type() == "process" || aBlock->type() == "if" || aBlock->type() == "pre" || aBlock->type() == "post" 
+           || aBlock->type() == "data" || aBlock->type() == "stored_data" 
+           || aBlock->type() == "document" || aBlock->type() == "manual_input"
+           || aBlock->type() == "display" || aBlock->type() == "manual_op"
+           || aBlock->type() == "parallel" || aBlock->type() == "ellipsis"
+           || aBlock->type() == "connector" || aBlock->type() == "ram"
+           || aBlock->type() == "seq_access" || aBlock->type() == "direct_access"
+           || aBlock->type() == "card" || aBlock->type() == "paper_tape")
         {
 
             QLineEdit *text = new QLineEdit();
@@ -1178,6 +1244,34 @@ void MainWindow::slotEditBlock(QBlock *aBlock)
                 lab->setText(tr("&Condition:"));
                 attr = "cond";
             }
+            else if (aBlock->type() == "data")
+                dlg.setWindowTitle(tr("Data"));
+            else if (aBlock->type() == "stored_data")
+                dlg.setWindowTitle(tr("Stored Data"));
+            else if (aBlock->type() == "document")
+                dlg.setWindowTitle(tr("Document"));
+            else if (aBlock->type() == "manual_input")
+                dlg.setWindowTitle(tr("Manual Input"));
+            else if (aBlock->type() == "display")
+                dlg.setWindowTitle(tr("Display"));
+            else if (aBlock->type() == "manual_op")
+                dlg.setWindowTitle(tr("Manual Operation"));
+            else if (aBlock->type() == "parallel")
+                dlg.setWindowTitle(tr("Parallel Actions"));
+            else if (aBlock->type() == "connector")
+                dlg.setWindowTitle(tr("Connector"));
+            else if (aBlock->type() == "ellipsis")
+                dlg.setWindowTitle(tr("Omission"));
+            else if (aBlock->type() == "ram")
+                dlg.setWindowTitle(tr("RAM"));
+            else if (aBlock->type() == "seq_access")
+                dlg.setWindowTitle(tr("Sequential Access"));
+            else if (aBlock->type() == "direct_access")
+                dlg.setWindowTitle(tr("Direct Access"));
+            else if (aBlock->type() == "card")
+                dlg.setWindowTitle(tr("Card"));
+            else if (aBlock->type() == "paper_tape")
+                dlg.setWindowTitle(tr("Paper Tape"));
             text->setText(aBlock->attributes.value(attr, ""));
             lab->setBuddy(text);
             QHBoxLayout *box = new QHBoxLayout;
@@ -1450,6 +1544,162 @@ void MainWindow::slotToolForCStyle()
         }
     }
 
+}
+
+// --- GOST 19.701-90 new block types ---
+
+void MainWindow::slotToolData()
+{
+    if(document()) {
+        document()->setBuffer("<algorithm><branch><data text=\"data\"/></branch></algorithm>");
+        if(!document()->buffer().isEmpty()) {
+            document()->setStatus(QFlowChart::Insertion);
+            document()->setMultiInsert(false);
+        }
+    }
+}
+
+void MainWindow::slotToolStoredData()
+{
+    if(document()) {
+        document()->setBuffer("<algorithm><branch><stored_data text=\"stored data\"/></branch></algorithm>");
+        if(!document()->buffer().isEmpty()) {
+            document()->setStatus(QFlowChart::Insertion);
+            document()->setMultiInsert(false);
+        }
+    }
+}
+
+void MainWindow::slotToolDocument()
+{
+    if(document()) {
+        document()->setBuffer("<algorithm><branch><document text=\"document\"/></branch></algorithm>");
+        if(!document()->buffer().isEmpty()) {
+            document()->setStatus(QFlowChart::Insertion);
+            document()->setMultiInsert(false);
+        }
+    }
+}
+
+void MainWindow::slotToolManualInput()
+{
+    if(document()) {
+        document()->setBuffer("<algorithm><branch><manual_input text=\"manual input\"/></branch></algorithm>");
+        if(!document()->buffer().isEmpty()) {
+            document()->setStatus(QFlowChart::Insertion);
+            document()->setMultiInsert(false);
+        }
+    }
+}
+
+void MainWindow::slotToolDisplay()
+{
+    if(document()) {
+        document()->setBuffer("<algorithm><branch><display text=\"display\"/></branch></algorithm>");
+        if(!document()->buffer().isEmpty()) {
+            document()->setStatus(QFlowChart::Insertion);
+            document()->setMultiInsert(false);
+        }
+    }
+}
+
+void MainWindow::slotToolManualOp()
+{
+    if(document()) {
+        document()->setBuffer("<algorithm><branch><manual_op text=\"manual op\"/></branch></algorithm>");
+        if(!document()->buffer().isEmpty()) {
+            document()->setStatus(QFlowChart::Insertion);
+            document()->setMultiInsert(false);
+        }
+    }
+}
+
+void MainWindow::slotToolParallel()
+{
+    if(document()) {
+        document()->setBuffer("<algorithm><branch><parallel text=\"parallel\"/></branch></algorithm>");
+        if(!document()->buffer().isEmpty()) {
+            document()->setStatus(QFlowChart::Insertion);
+            document()->setMultiInsert(false);
+        }
+    }
+}
+
+void MainWindow::slotToolConnector()
+{
+    if(document()) {
+        document()->setBuffer("<algorithm><branch><connector text=\"A\"/></branch></algorithm>");
+        if(!document()->buffer().isEmpty()) {
+            document()->setStatus(QFlowChart::Insertion);
+            document()->setMultiInsert(false);
+        }
+    }
+}
+
+void MainWindow::slotToolEllipsis()
+{
+    if(document()) {
+        document()->setBuffer("<algorithm><branch><ellipsis text=\"...\"/></branch></algorithm>");
+        if(!document()->buffer().isEmpty()) {
+            document()->setStatus(QFlowChart::Insertion);
+            document()->setMultiInsert(false);
+        }
+    }
+}
+
+void MainWindow::slotToolRam()
+{
+    if(document()) {
+        document()->setBuffer("<algorithm><branch><ram text=\"RAM\"/></branch></algorithm>");
+        if(!document()->buffer().isEmpty()) {
+            document()->setStatus(QFlowChart::Insertion);
+            document()->setMultiInsert(false);
+        }
+    }
+}
+
+void MainWindow::slotToolSeqAccess()
+{
+    if(document()) {
+        document()->setBuffer("<algorithm><branch><seq_access text=\"tape\"/></branch></algorithm>");
+        if(!document()->buffer().isEmpty()) {
+            document()->setStatus(QFlowChart::Insertion);
+            document()->setMultiInsert(false);
+        }
+    }
+}
+
+void MainWindow::slotToolDirectAccess()
+{
+    if(document()) {
+        document()->setBuffer("<algorithm><branch><direct_access text=\"disk\"/></branch></algorithm>");
+        if(!document()->buffer().isEmpty()) {
+            document()->setStatus(QFlowChart::Insertion);
+            document()->setMultiInsert(false);
+        }
+    }
+}
+
+void MainWindow::slotToolCard()
+{
+    if(document()) {
+        document()->setBuffer("<algorithm><branch><card text=\"card\"/></branch></algorithm>");
+        if(!document()->buffer().isEmpty()) {
+            document()->setStatus(QFlowChart::Insertion);
+            document()->setMultiInsert(false);
+        }
+    }
+}
+
+void MainWindow::slotToolPaperTape()
+{
+    if(document()) {
+        document()->setBuffer("<algorithm><branch><paper_tape text=\"paper tape\"/></branch></algorithm>");
+        if(!document()->buffer().isEmpty()) {
+            document()->setStatus(QFlowChart::Insertion);
+            document()->setMultiInsert(false);
+        }
+    }
 }
 
 QString MainWindow::getFilterFor(const QString & fileExt)

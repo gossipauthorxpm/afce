@@ -23,6 +23,7 @@ QFlowChart::QFlowChart(QWidget *pObj /* = 0 */) : QWidget(pObj), fZoom(1)
   fBuffer = QString();
   fTargetPoint = QInsertionPoint();
   fStatus = Display;
+  fActiveBlock = nullptr;
   fRoot = new QBlock();
   root()->setFlowChart(this);
   clear();
@@ -349,7 +350,10 @@ QSize QFlowChart::sizeHint() const
 {
   if (root())
   {
-    return QSize(root()->width, root()->height);
+    // Never let the content size dominate the layout — scroll bars handle overflow.
+    // A huge sizeHint (e.g. 5000×10000 at 500 % zoom) would starve the zoom panel.
+    return QSize(qMin((int)root()->width, 1200),
+                 qMin((int)root()->height, 800));
   }
   else return QSize();
 
@@ -638,11 +642,41 @@ void QBlock::adjustSize(const double aZoom)
   double clientWidth = 0, clientHeight = 0;
   if (isBranch)
   {
+    // Первый проход: собираем размеры блоков и комментариев
+    double lastNonCommentWidth = 0;
+    bool insideIfElse = parent && parent->type() == "if";
     for (int i = 0; i < items.size(); ++i)
     {
       item(i)->adjustSize(aZoom);
+      if (item(i)->type() == "comment") {
+        // Центральные комментарии (вне if/else) занимают вертикальное место
+        if (!insideIfElse) {
+          clientHeight += item(i)->height;
+        }
+        continue;
+      }
       if (clientWidth < item(i)->width) clientWidth = item(i)->width;
       clientHeight += item(i)->height;
+      lastNonCommentWidth = item(i)->width;
+    }
+    // Второй проход: учитываем ширину комментариев ТОЛЬКО для if/else-ветвей
+    // (на стороне — скобка расширяет ветку)
+    for (int i = 0; i < items.size(); ++i)
+    {
+      if (item(i)->type() != "comment") continue;
+      if (!insideIfElse) continue; // центральные не расширяют
+      QBlock *target = nullptr;
+      for (int j = i + 1; j < items.size(); ++j) {
+        if (items.at(j)->type() != "comment") { target = items.at(j); break; }
+      }
+      if (!target) {
+        for (int j = i - 1; j >= 0; --j) {
+          if (items.at(j)->type() != "comment") { target = items.at(j); break; }
+        }
+      }
+      if (!target) continue;
+      double needed = target->width + 2 * (8 * aZoom + item(i)->width);
+      if (needed > clientWidth) clientWidth = needed;
     }
     double minWidth = 180 * aZoom;
     double minHeight = 16 * aZoom;
@@ -675,8 +709,57 @@ void QBlock::adjustSize(const double aZoom)
     {
       topMargin = 16 * aZoom;
       bottomMargin = 10 * aZoom;
-      clientWidth = 120 * aZoom;
-      clientHeight = 60 * aZoom;
+      leftMargin = 10 * aZoom;
+      rightMargin = 10 * aZoom;
+
+      // Динамический размер на основе длины текста
+      QString text;
+      if (type() == "assign")
+        text = QString("%1 := %2").arg(attributes.value("dest", ""), attributes.value("src", ""));
+      else
+        text = attributes.value("text", "");
+
+      QFont fnt("Tahoma");
+      fnt.setPixelSize(13 * aZoom);
+      QFontMetricsF fm(fnt);
+      double textWidth = fm.horizontalAdvance(text);
+      double lineH = fm.height();
+      double avgW = qMax(1.0, fm.averageCharWidth());
+
+      // Ширина текстовой области внутри блока (с учётом отступов 4px с каждой стороны)
+      double availTextW = qMax(112.0 * aZoom, textWidth);
+      int cpl = qMax(1, (int)(availTextW / avgW));
+      int lines = qMax(1, (text.length() + cpl - 1) / cpl);
+
+      clientWidth = qMax(textWidth + 16.0 * aZoom, 120.0 * aZoom);
+      clientHeight = qMax(lines * lineH + 16.0 * aZoom, 60.0 * aZoom);
+    }
+    else if (type() == "predefined")
+    {
+      topMargin = 16 * aZoom;
+      bottomMargin = 10 * aZoom;
+      leftMargin = 10 * aZoom;
+      rightMargin = 10 * aZoom;
+
+      // Функциональный блок (с перемычками): текст должен помещаться между ними
+      QString text = attributes.value("text", "");
+      QFont fnt("Tahoma");
+      fnt.setPixelSize(13 * aZoom);
+      QFontMetricsF fm(fnt);
+      double textWidth = fm.horizontalAdvance(text);
+      double lineH = fm.height();
+      double avgW = qMax(1.0, fm.averageCharWidth());
+
+      // Текст рисуется между вертикальными перемычками (barOffset = b/6)
+      // Доступная ширина = b - 2*b/6 = 2*b/3
+      // Минимальная ширина clientWidth, чтобы текст вмещался между перемычками
+      double minWForText = qMax(120.0 * aZoom, (textWidth + 8.0 * aZoom) * 1.5);
+      double availTextW = minWForText * 2.0 / 3.0 - 8.0 * aZoom;
+      int cpl = qMax(1, (int)(availTextW / avgW));
+      int lines = qMax(1, (text.length() + cpl - 1) / cpl);
+
+      clientWidth = minWForText;
+      clientHeight = qMax(lines * lineH + 16.0 * aZoom, 60.0 * aZoom);
     }
     else if (type() == "io")
     {
@@ -684,8 +767,22 @@ void QBlock::adjustSize(const double aZoom)
       bottomMargin = 10 * aZoom;
       leftMargin = 20 * aZoom;
       rightMargin = 20 * aZoom;
-      clientWidth = 120 * aZoom;
-      clientHeight = 60 * aZoom;
+
+      // Параллелограмм ввода: текст располагается с учётом скоса a/4
+      QString text = attributes.value("vars", "");
+      QFont fnt("Tahoma");
+      fnt.setPixelSize(13 * aZoom);
+      QFontMetricsF fm(fnt);
+      double textWidth = fm.horizontalAdvance(text);
+      double lineH = fm.height();
+      double avgW = qMax(1.0, fm.averageCharWidth());
+
+      // В параллелограмме скос равен a/4, доступная ширина ≈ b - a/2
+      int cpl = qMax(1, (int)((120.0 * aZoom - 30.0 * aZoom) / avgW));
+      int lines = qMax(1, (text.length() + cpl - 1) / cpl);
+
+      clientWidth = qMax(textWidth + 16.0 * aZoom, 120.0 * aZoom);
+      clientHeight = qMax(lines * lineH + 16.0 * aZoom, 60.0 * aZoom);
     }
     else if (type() == "ou")
     {
@@ -693,8 +790,21 @@ void QBlock::adjustSize(const double aZoom)
       bottomMargin = 10 * aZoom;
       leftMargin = 20 * aZoom;
       rightMargin = 20 * aZoom;
-      clientWidth = 120 * aZoom;
-      clientHeight = 60 * aZoom;
+
+      // Параллелограмм вывода
+      QString text = attributes.value("vars", "");
+      QFont fnt("Tahoma");
+      fnt.setPixelSize(13 * aZoom);
+      QFontMetricsF fm(fnt);
+      double textWidth = fm.horizontalAdvance(text);
+      double lineH = fm.height();
+      double avgW = qMax(1.0, fm.averageCharWidth());
+
+      int cpl = qMax(1, (int)((120.0 * aZoom - 30.0 * aZoom) / avgW));
+      int lines = qMax(1, (text.length() + cpl - 1) / cpl);
+
+      clientWidth = qMax(textWidth + 16.0 * aZoom, 120.0 * aZoom);
+      clientHeight = qMax(lines * lineH + 16.0 * aZoom, 60.0 * aZoom);
     }
     else if (type() == "if")
     {
@@ -716,6 +826,103 @@ void QBlock::adjustSize(const double aZoom)
       topMargin = 108 * aZoom;
       bottomMargin = 32 * aZoom;
     }
+    else if (type() == "comment")
+    {
+      // Комментарий по ГОСТ 19.701-90 п.3.4.3
+      // Размер блока нужен для клика/выбора
+      // Actual w/h will be adjusted in adjustPosition() based on target
+      QString text = attributes.value("text", "");
+      QFont fnt("Tahoma");
+      fnt.setPixelSize(11 * aZoom);
+      QFontMetricsF fm(fnt);
+      double textWidth = fm.horizontalAdvance(text);
+      double textHeight = fm.height();
+
+      double bracketDepth = qMax(20.0 * aZoom, textHeight * 0.12);
+      double pad = 3 * aZoom;
+
+      topMargin = 0;
+      bottomMargin = 0;
+      leftMargin = 0;
+      rightMargin = 0;
+      // Полная ширина: скобка + зазор + текст (для любой стороны)
+      clientWidth = bracketDepth + pad + textWidth + 2*pad;
+      clientHeight = textHeight + 2*pad;
+    }
+    else if (type() == "data" || type() == "stored_data" || type() == "document" ||
+             type() == "manual_input" || type() == "display" || type() == "manual_op" ||
+             type() == "ram" || type() == "card" || type() == "paper_tape" ||
+             type() == "seq_access" || type() == "direct_access")
+    {
+      topMargin = 16 * aZoom;
+      bottomMargin = 10 * aZoom;
+      leftMargin = 10 * aZoom;
+      rightMargin = 10 * aZoom;
+
+      QString text = attributes.value("text", "");
+      QFont fnt("Tahoma");
+      fnt.setPixelSize(13 * aZoom);
+      QFontMetricsF fm(fnt);
+      double textWidth = fm.horizontalAdvance(text);
+      double lineH = fm.height();
+      double avgW = qMax(1.0, fm.averageCharWidth());
+
+      double availTextW = qMax(112.0 * aZoom, textWidth);
+      int cpl = qMax(1, (int)(availTextW / avgW));
+      int lines = qMax(1, (text.length() + cpl - 1) / cpl);
+
+      clientWidth = qMax(textWidth + 16.0 * aZoom, 120.0 * aZoom);
+      clientHeight = qMax(lines * lineH + 16.0 * aZoom, 60.0 * aZoom);
+    }
+    else if (type() == "parallel")
+    {
+      topMargin = 16 * aZoom;
+      bottomMargin = 10 * aZoom;
+      leftMargin = 10 * aZoom;
+      rightMargin = 10 * aZoom;
+
+      QString text = attributes.value("text", "");
+      QFont fnt("Tahoma");
+      fnt.setPixelSize(13 * aZoom);
+      QFontMetricsF fm(fnt);
+      double textWidth = fm.horizontalAdvance(text);
+      double lineH = fm.height();
+      double avgW = qMax(1.0, fm.averageCharWidth());
+
+      double availTextW = qMax(112.0 * aZoom, textWidth);
+      int cpl = qMax(1, (int)(availTextW / avgW));
+      int lines = qMax(1, (text.length() + cpl - 1) / cpl);
+
+      clientWidth = qMax(textWidth + 16.0 * aZoom, 120.0 * aZoom);
+      clientHeight = qMax(lines * lineH + 36.0 * aZoom, 70.0 * aZoom);
+    }
+    else if (type() == "connector")
+    {
+      topMargin = 16 * aZoom;
+      bottomMargin = 10 * aZoom;
+      leftMargin = 10 * aZoom;
+      rightMargin = 10 * aZoom;
+
+      QString text = attributes.value("text", "");
+      QFont fnt("Tahoma");
+      fnt.setPixelSize(11 * aZoom);
+      QFontMetricsF fm(fnt);
+      double textWidth = fm.horizontalAdvance(text);
+      double textHeight = fm.height();
+
+      double dia = qMax(textWidth, textHeight) + 16.0 * aZoom;
+      clientWidth = qMax(dia, 40.0 * aZoom);
+      clientHeight = qMax(dia, 40.0 * aZoom);
+    }
+    else if (type() == "ellipsis")
+    {
+      topMargin = 8 * aZoom;
+      bottomMargin = 8 * aZoom;
+      leftMargin = 10 * aZoom;
+      rightMargin = 10 * aZoom;
+      clientWidth = 80.0 * aZoom;
+      clientHeight = 20.0 * aZoom;
+    }
 
     width = leftMargin + clientWidth + rightMargin;
     height = topMargin + clientHeight + bottomMargin;
@@ -728,10 +935,183 @@ void QBlock::adjustPosition(const double ox, const double oy)
   y = oy;
   if (isBranch)
   {
+    // ---- Pass 1: temporary positioning to determine extent (incl. comments) ----
+    // Place non-comment blocks at preliminary centers and determine where each
+    // comment would go, so we know the total width required.
     double cy = y;
+    double maxRight = x + width;
+    double minLeft  = x;
     for (int i = 0; i < items.size(); ++i)
     {
-      item(i)->adjustPosition(ox + (width - item(i)->width) / 2, cy);
+      if (items.at(i)->type() == "comment") {
+        // Find target block (forward first, then backward)
+        QBlock *target = nullptr;
+        for (int j = i + 1; j < items.size(); ++j) {
+            if (items.at(j)->type() != "comment") { target = items.at(j); break; }
+        }
+        if (!target) {
+            for (int j = i - 1; j >= 0; --j) {
+                if (items.at(j)->type() != "comment") { target = items.at(j); break; }
+            }
+        }
+
+        double gap = 8 * zoom();
+        double cw  = items.at(i)->width;
+        // Predict target's center (blocks are centered in branch)
+        double tgtX = target ? ox + (width - target->width) / 2 : ox;
+
+        // Determine side (same logic as final pass below)
+        bool placeRight = true;
+        bool hasBranchIdx = false;
+        {
+          int elseDepth = 0;
+          int branchIdx = 0;
+          QBlock *node = this;
+          while (node) {
+              QBlock *p = node->parent;
+              if (p && p->type() == "if") {
+                  int idx = p->items.indexOf(node);
+                  if (!hasBranchIdx) { branchIdx = idx; hasBranchIdx = true; }
+                  else if (idx == 1) { elseDepth++; }
+              }
+              node = p;
+          }
+          if (!hasBranchIdx) {
+              int commentIdx = 0;
+              for (int j = 0; j < items.size(); ++j) {
+                  if (items.at(j)->type() == "comment") {
+                      if (items.at(j) == items.at(i)) break;
+                      commentIdx++;
+                  }
+              }
+              placeRight = (commentIdx % 2 == 0);
+          } else if (branchIdx == 1) {
+              placeRight = true;
+          } else {
+              placeRight = (elseDepth >= 2);
+          }
+        }
+
+        if (!hasBranchIdx) {
+          // Центральный комментарий (вне if/else): занимает вертикальное место,
+          // не расширяет ветку
+          cy += items.at(i)->height;
+        } else if (target) {
+          // if/else-комментарий: на стороне, расширяет ветку
+          if (placeRight) {
+              double rx = tgtX + target->width + gap + cw;
+              if (rx > maxRight) maxRight = rx;
+          } else {
+              double lx = tgtX - gap - cw;
+              if (lx < minLeft) minLeft = lx;
+          }
+        }
+        continue;
+      }
+      cy += items.at(i)->height;
+    }
+
+    // Adjust branch bounds to encompass all comments
+    if (minLeft < x)  x = minLeft;
+    if (maxRight > x + width) width = maxRight - x;
+
+    // ---- Pass 2: final positioning with corrected bounds ----
+    cy = y;
+    for (int i = 0; i < items.size(); ++i)
+    {
+      if (items.at(i)->type() == "comment") {
+        double cw = items.at(i)->width;
+        double ch = items.at(i)->height;
+
+        // Determine if this comment is center-embedded or side
+      bool isCenter = false;
+      {
+        QBlock *node = this;
+          while (node) {
+              QBlock *p = node->parent;
+              if (p && p->type() == "if") { break; }
+              node = p;
+          }
+          isCenter = (!node || !node->parent || node->parent->type() != "if");
+        }
+
+        if (isCenter) {
+          // Центральный комментарий: как блок — по центру, разрывает линию
+          items.at(i)->adjustPosition(x + (width - cw) / 2, cy);
+          cy += ch;
+        } else {
+          // if/else-комментарий: скобка сбоку
+          QBlock *target = nullptr;
+          bool targetIsForward = false;
+          for (int j = i + 1; j < items.size(); ++j) {
+              if (items.at(j)->type() != "comment") { target = items.at(j); targetIsForward = true; break; }
+          }
+          if (!target) {
+              for (int j = i - 1; j >= 0; --j) {
+                  if (items.at(j)->type() != "comment") { target = items.at(j); break; }
+              }
+          }
+          if (target) {
+              double gap = 8 * zoom();
+
+              double targetX, targetY, targetRight;
+              if (targetIsForward) {
+                  targetX     = x + (width - target->width) / 2;
+                  targetY     = cy;
+                  targetRight = targetX + target->width;
+              } else {
+                  targetX     = target->x;
+                  targetY     = target->y;
+                  targetRight = target->x + target->width;
+              }
+
+              bool placeRight = true;
+              {
+                int elseDepth = 0;
+                bool hasBranchIdx = false;
+                int branchIdx = 0;
+                QBlock *node = this;
+                while (node) {
+                    QBlock *p = node->parent;
+                    if (p && p->type() == "if") {
+                        int idx = p->items.indexOf(node);
+                        if (!hasBranchIdx) { branchIdx = idx; hasBranchIdx = true; }
+                        else if (idx == 1) { elseDepth++; }
+                    }
+                    node = p;
+                }
+                if (!hasBranchIdx) {
+                    int commentIdx = 0;
+                    for (int j = 0; j < items.size(); ++j) {
+                        if (items.at(j)->type() == "comment") {
+                            if (items.at(j) == items.at(i)) break;
+                            commentIdx++;
+                        }
+                    }
+                    placeRight = (commentIdx % 2 == 0);
+                } else if (branchIdx == 1) {
+                    placeRight = true;
+                } else {
+                    placeRight = (elseDepth >= 2);
+                }
+              }
+
+              if (placeRight) {
+                  double bx = targetRight + gap;
+                  double by = targetY + target->height / 2 - ch / 2;
+                  items.at(i)->adjustPosition(bx, by);
+              } else {
+                  double bx = targetX - gap - cw;
+                  double by = targetY + target->height / 2 - ch / 2;
+                  items.at(i)->adjustPosition(bx, by);
+              }
+          } else {
+              items.at(i)->adjustPosition(x, cy);
+          }
+        }
+        continue;
+      }
+      item(i)->adjustPosition(x + (width - item(i)->width) / 2, cy);
       cy += item(i)->height;
     }
   }
@@ -805,9 +1185,34 @@ void QBlock::paint(QPainter *canvas, bool fontSizeInPoints) const
 
     if (isBranch)
     {
-      /* отрисовка ветви */
-      QLineF line(hcenter, y-0.5, hcenter, y + height+0.5);
-      canvas->drawLine(line);
+      /* отрисовка ветви — сегментами между блоками */
+      /* Центральные комментарии (вне if/else) разрывают линию: */
+      /* линия идёт от предыдущего блока до верха комментария, */
+      /* затем от низа комментария до следующего блока. */
+      bool insideIfElse = parent && parent->type() == "if";
+      double lastY = y;
+      bool hasBlock = false;
+      for (int i = 0; i < items.size(); ++i)
+      {
+        QBlock *blk = items.at(i);
+        // Боковые if/else-комментарии не влияют на линию
+        if (blk->type() == "comment" && insideIfElse)
+          continue;
+        if (!hasBlock)
+        {
+          canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, blk->y));
+          hasBlock = true;
+        }
+        else
+        {
+          canvas->drawLine(QLineF(hcenter, lastY, hcenter, blk->y));
+        }
+        lastY = blk->y + blk->height;
+      }
+      if (hasBlock)
+        canvas->drawLine(QLineF(hcenter, lastY, hcenter, y + height + 0.5));
+      else
+        canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, y + height + 0.5));
     }
     else
     {
@@ -832,82 +1237,99 @@ void QBlock::paint(QPainter *canvas, bool fontSizeInPoints) const
       }
       else if(type() == "process")
       {
-        /* процесс */
+        /* процесс — с динамическим размером */
+        double p_a = height - topMargin - bottomMargin;  // = clientHeight
+        double p_b = width - leftMargin - rightMargin;    // = clientWidth
         canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, y + 16 * zoom()));
         QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, y + 16 * zoom()),
                                     QSize(6 * zoom(), 12 * zoom()));
-        QRectF rect(hcenter - b/2, y + 16 * zoom(), b, a);
-        QRectF textRect(hcenter - b/2 + 4 * zoom(), y + 20 * zoom(), b - 8 * zoom(), a - 8 * zoom());
+        QRectF rect(hcenter - p_b/2, y + 16 * zoom(), p_b, p_a);
+        QRectF textRect(hcenter - p_b/2 + 4 * zoom(), y + 20 * zoom(),
+                        p_b - 8 * zoom(), p_a - 8 * zoom());
         canvas->drawRect(rect);
         canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, attributes.value("text", ""));
-        canvas->drawLine(QLineF(hcenter, y + 16 * zoom()+a, hcenter, bottom+0.5));
+        canvas->drawLine(QLineF(hcenter, y + 16 * zoom()+p_a, hcenter, bottom+0.5));
       }
       else if(type() == "predefined")
       {
-        /* предопределённый процесс (ГОСТ 19.701-90) */
+        /* предопределённый процесс (ГОСТ 19.701-90) — с динамическим размером */
+        double p_a = height - topMargin - bottomMargin;  // = clientHeight
+        double p_b = width - leftMargin - rightMargin;    // = clientWidth
         canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, y + 16 * zoom()));
         QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, y + 16 * zoom()),
                                     QSize(6 * zoom(), 12 * zoom()));
-        QRectF rect(hcenter - b/2, y + 16 * zoom(), b, a);
-        QRectF textRect(hcenter - b/2 + 4 * zoom(), y + 20 * zoom(), b - 8 * zoom(), a - 8 * zoom());
+        QRectF rect(hcenter - p_b/2, y + 16 * zoom(), p_b, p_a);
         canvas->drawRect(rect);
         // vertical bars inside the rectangle (predefined process feature)
-        double barOffset = b / 6;
-        canvas->drawLine(QLineF(hcenter - b/2 + barOffset, y + 16 * zoom(),
-                                hcenter - b/2 + barOffset, y + 16 * zoom() + a));
-        canvas->drawLine(QLineF(hcenter + b/2 - barOffset, y + 16 * zoom(),
-                                hcenter + b/2 - barOffset, y + 16 * zoom() + a));
+        double barOffset = p_b / 6;
+        canvas->drawLine(QLineF(hcenter - p_b/2 + barOffset, y + 16 * zoom(),
+                                hcenter - p_b/2 + barOffset, y + 16 * zoom() + p_a));
+        canvas->drawLine(QLineF(hcenter + p_b/2 - barOffset, y + 16 * zoom(),
+                                hcenter + p_b/2 - barOffset, y + 16 * zoom() + p_a));
+        // Текст ТОЛЬКО между вертикальными перемычками (не наезжает на них)
+        QRectF textRect(hcenter - p_b/2 + barOffset + 2 * zoom(), y + 20 * zoom(),
+                        p_b - 2 * barOffset - 4 * zoom(), p_a - 8 * zoom());
         canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, attributes.value("text", ""));
-        canvas->drawLine(QLineF(hcenter, y + 16 * zoom()+a, hcenter, bottom+0.5));
+        canvas->drawLine(QLineF(hcenter, y + 16 * zoom()+p_a, hcenter, bottom+0.5));
       }
       else if(type() == "assign")
       {
-        /* присваивание */
+        /* присваивание — с динамическим размером */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
         canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, y + 16 * zoom()));
         QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, y + 16 * zoom()),
                                     QSize(6 * zoom(), 12 * zoom()));
-        QRectF rect(hcenter - b/2, y + 16 * zoom(), b, a);
-        QRectF textRect(hcenter - b/2+4, y + 16 * zoom()+4, b-8, a-8);
+        QRectF rect(hcenter - p_b/2, y + 16 * zoom(), p_b, p_a);
+        QRectF textRect(hcenter - p_b/2 + 4 * zoom(), y + 20 * zoom(),
+                        p_b - 8 * zoom(), p_a - 8 * zoom());
         canvas->drawRect(rect);
-        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, QString("%1 := %2").arg(attributes.value("dest", ""), attributes.value("src", "")));
-        canvas->drawLine(QLineF(hcenter, y + 16 * zoom()+a, hcenter, bottom+0.5));
+        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere,
+            QString("%1 := %2").arg(attributes.value("dest", ""), attributes.value("src", "")));
+        canvas->drawLine(QLineF(hcenter, y + 16 * zoom()+p_a, hcenter, bottom+0.5));
       }
       else if(type() == "io")
       {
-        /* ввод/вывод */
+        /* ввод/вывод — с динамическим размером */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
         canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, y + 16 * zoom()));
         QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, y + 16 * zoom()),
                                     QSize(6 * zoom(), 12 * zoom()));
         QPointF par[4];
-        par[0] = QPointF(hcenter - b/2 + a/4, y + 16 * zoom());
-        par[1] = QPointF(hcenter + b/2 + a/4, y + 16 * zoom());
-        par[2] = QPointF(hcenter + b/2 - a/4, y + 16 * zoom() + a);
-        par[3] = QPointF(hcenter - b/2 - a/4, y + 16 * zoom() + a);
+        par[0] = QPointF(hcenter - p_b/2 + p_a/4, y + 16 * zoom());
+        par[1] = QPointF(hcenter + p_b/2 + p_a/4, y + 16 * zoom());
+        par[2] = QPointF(hcenter + p_b/2 - p_a/4, y + 16 * zoom() + p_a);
+        par[3] = QPointF(hcenter - p_b/2 - p_a/4, y + 16 * zoom() + p_a);
         canvas->drawPolygon(par, 4);
-        QRectF rect(hcenter - b/2, y + 16 * zoom(), b, a);
+        // Текст внутри параллелограмма (с учётом скоса)
+        QRectF textRect(hcenter - p_b/2 + p_a/4 + 4 * zoom(), y + 20 * zoom(),
+                        p_b - p_a/2 - 8 * zoom(), p_a - 8 * zoom());
         QStringList ls = attributes["vars"].split(",");
-
         QString text = ls.join(", ");
-        canvas->drawText(rect, Qt::TextSingleLine | Qt::AlignHCenter | Qt::AlignVCenter, text);
-        canvas->drawLine(QLineF(hcenter, y + 16 * zoom()+a, hcenter, bottom+0.5));
+        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, text);
+        canvas->drawLine(QLineF(hcenter, y + 16 * zoom()+p_a, hcenter, bottom+0.5));
       }
       else if(type() == "ou")
       {
-        /* ввод/вывод */
+        /* вывод — с динамическим размером */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
         canvas->drawLine(QLineF(hcenter, y, hcenter, y + 16 * zoom()));
         QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, y + 16 * zoom()),
                                     QSize(6 * zoom(), 12 * zoom()));
         QPointF par[4];
-        par[0] = QPointF(hcenter - b/2 + a/4, y + 16 * zoom());
-        par[1] = QPointF(hcenter + b/2 + a/4, y + 16 * zoom());
-        par[2] = QPointF(hcenter + b/2 - a/4, y + 16 * zoom() + a);
-        par[3] = QPointF(hcenter - b/2 - a/4, y + 16 * zoom() + a);
+        par[0] = QPointF(hcenter - p_b/2 + p_a/4, y + 16 * zoom());
+        par[1] = QPointF(hcenter + p_b/2 + p_a/4, y + 16 * zoom());
+        par[2] = QPointF(hcenter + p_b/2 - p_a/4, y + 16 * zoom() + p_a);
+        par[3] = QPointF(hcenter - p_b/2 - p_a/4, y + 16 * zoom() + p_a);
         canvas->drawPolygon(par, 4);
-        QRectF textRect(hcenter - b/2 + a/4 +4, y + 16 * zoom()+4, b-a/2 - 8, a - 8);
+        QRectF textRect(hcenter - p_b/2 + p_a/4 + 4 * zoom(), y + 20 * zoom(),
+                        p_b - p_a/2 - 8 * zoom(), p_a - 8 * zoom());
         QStringList ls = attributes["vars"].split(",");
         QString text = ls.join(", ");
-        canvas->drawText(textRect, Qt::TextSingleLine | Qt::AlignHCenter | Qt::AlignVCenter, text);
-        canvas->drawLine(QLineF(hcenter, y + 16 * zoom()+a, hcenter, bottom+0.5));
+        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, text);
+        canvas->drawLine(QLineF(hcenter, y + 16 * zoom()+p_a, hcenter, bottom+0.5));
       }
       else if(type() == "if")
       {
@@ -1072,6 +1494,531 @@ void QBlock::paint(QPainter *canvas, bool fontSizeInPoints) const
         QFlowChart::drawRightArrow(canvas, collector[4],
                                     QSize(12 * zoom(), 6 * zoom()));
 
+      }
+      else if(type() == "comment")
+      {
+        /* комментарий по ГОСТ 19.701-90 п.3.4.3
+         *
+         * Справа от блока:  block ─ ─ ─ ─┬─ text
+         *                                │
+         *                                └─
+         * Слева от блока:   text ─┬─ ─ ─ ─ ─ block
+         *                         │
+         *                         └─
+         * Высота скобки = высоте блока.
+         * Положение (x,y) устанавливается в adjustPosition().
+         *
+         * Центральные комментарии (вне if/else) — встроены в поток,
+         * разрывают линию, отображаются как текст по центру.
+         */
+        QFont commentFont("Tahoma");
+        commentFont.setWeight(QFont::Normal);
+        if (fontSizeInPoints)
+          commentFont.setPointSizeF(9 * zoom());
+        else
+          commentFont.setPixelSize(11 * zoom());
+        canvas->setFont(commentFont);
+
+        QString commentText = attributes.value("text", "");
+        QFontMetricsF cfm(commentFont);
+        double textWidth = cfm.horizontalAdvance(commentText);
+        double textHeight = cfm.height();
+        double pad = 3 * zoom();
+
+        bool isCenterComment = parent && parent->parent &&
+                                parent->parent->type() != "if";
+
+        if (isCenterComment) {
+          // Центральный комментарий: встроен в поток, разрывает линию
+          QPen bgPen = canvas->pen();
+          bgPen.setStyle(Qt::DashLine);
+          canvas->setPen(bgPen);
+          canvas->drawRoundedRect(QRectF(x + pad, y + pad, width - 2*pad,
+                                         height - 2*pad), 3*zoom(), 3*zoom());
+          canvas->setPen(QPen(st.normalForeground(), lw));
+          canvas->drawText(QRectF(x, y, width, height),
+                           Qt::AlignCenter | Qt::TextWrapAnywhere, commentText);
+        } else {
+        // Определяем блок, к которому относится комментарий
+        QBlock *target = nullptr;
+        if (parent) {
+            int myIndex = -1;
+            for (int i = 0; i < parent->items.size(); ++i) {
+                if (parent->items.at(i) == this) { myIndex = i; break; }
+            }
+            if (myIndex >= 0) {
+                for (int i = myIndex + 1; i < parent->items.size(); ++i) {
+                    if (parent->items.at(i)->type() != "comment") { target = parent->items.at(i); break; }
+                }
+                if (!target) {
+                    for (int i = myIndex - 1; i >= 0; --i) {
+                        if (parent->items.at(i)->type() != "comment") { target = parent->items.at(i); break; }
+                    }
+                }
+            }
+        }
+        if (!target) return;
+
+        double targetMidY = target->y + target->height / 2;
+        double gap = 8 * zoom();
+
+        // Определяем, с какой стороны блок: по положению комментария
+        bool placeRight = (x > target->x);
+        double bracketH = target->height; // высота скобки = высоте блока
+        double bracketDepth = qMax(20.0 * zoom(), bracketH * 0.12); // длина ── (не менее 20px)
+
+        QPen dashPen = canvas->pen();
+        dashPen.setStyle(Qt::DashLine);
+        QPen solidPen = canvas->pen();
+        solidPen.setStyle(Qt::SolidLine);
+
+        if (placeRight) {
+            // ─ ─ ─ ─┬─ text
+            //         │
+            //         └─
+            double bracketY = targetMidY - bracketH / 2;
+            double bracketX = target->x + target->width + gap;
+            double rhsX = bracketX + bracketDepth;
+
+            // Пунктир от блока к скобке
+            canvas->setPen(dashPen);
+            canvas->drawLine(QLineF(target->x + target->width, targetMidY,
+                                    bracketX, targetMidY));
+
+            // Скобка [
+            canvas->setPen(solidPen);
+            // Вертикаль (левая сторона [)
+            canvas->drawLine(QLineF(bracketX, bracketY, bracketX, bracketY + bracketH));
+            // Верх
+            canvas->drawLine(QLineF(bracketX, bracketY, rhsX, bracketY));
+            // Низ
+            canvas->drawLine(QLineF(bracketX, bracketY + bracketH, rhsX, bracketY + bracketH));
+
+            // Текст справа от скобки
+            double textX = rhsX + pad;
+            double textY = targetMidY - textHeight / 2;
+            QRectF tr(textX, textY, textWidth + 2*pad, textHeight);
+            canvas->drawText(tr, Qt::AlignLeft | Qt::AlignVCenter, commentText);
+        } else {
+            // text ─┬─ ─ ─ ─ ─
+            //        │
+            //        └─
+            double bracketY = targetMidY - bracketH / 2;
+            double bracketX = target->x - gap;
+            double lhsX = bracketX - bracketDepth;
+
+            canvas->setPen(dashPen);
+            canvas->drawLine(QLineF(bracketX, targetMidY, target->x, targetMidY));
+
+            canvas->setPen(solidPen);
+            canvas->drawLine(QLineF(bracketX, bracketY, bracketX, bracketY + bracketH));
+            canvas->drawLine(QLineF(lhsX, bracketY, bracketX, bracketY));
+            canvas->drawLine(QLineF(lhsX, bracketY + bracketH, bracketX, bracketY + bracketH));
+
+            double textX = lhsX - pad - textWidth;
+            double textY = targetMidY - textHeight / 2;
+            QRectF tr(textX, textY, textWidth + 2*pad, textHeight);
+            canvas->drawText(tr, Qt::AlignRight | Qt::AlignVCenter, commentText);
+        }
+      } // закрывает else (isCenterComment)
+      }
+      else if(type() == "data")
+      {
+        /* данные — параллелограмм с наклоном вправо */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
+        canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, y + 16 * zoom()));
+        QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, y + 16 * zoom()),
+                                    QSize(6 * zoom(), 12 * zoom()));
+        QPointF par[4];
+        // Наклон вправо: верхняя грань смещена влево, нижняя — вправо
+        par[0] = QPointF(hcenter - p_b/2 - p_a/4, y + 16 * zoom());
+        par[1] = QPointF(hcenter + p_b/2 - p_a/4, y + 16 * zoom());
+        par[2] = QPointF(hcenter + p_b/2 + p_a/4, y + 16 * zoom() + p_a);
+        par[3] = QPointF(hcenter - p_b/2 + p_a/4, y + 16 * zoom() + p_a);
+        canvas->drawPolygon(par, 4);
+        QRectF textRect(hcenter - p_b/2 - p_a/4 + 4 * zoom(), y + 20 * zoom(),
+                        p_b + p_a/2 - 8 * zoom(), p_a - 8 * zoom());
+        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, attributes.value("text", ""));
+        canvas->drawLine(QLineF(hcenter, y + 16 * zoom() + p_a, hcenter, bottom+0.5));
+      }
+      else if(type() == "stored_data")
+      {
+        /* запоминаемые данные — шестиугольник с вогнутыми боковыми сторонами */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
+        double leftX = hcenter - p_b/2;
+        double topY = y + 16 * zoom();
+        double rightX = hcenter + p_b/2;
+        double bottomY = topY + p_a;
+        double indent = p_b * 0.12;
+
+        canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, topY));
+        QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, topY),
+                                    QSize(6 * zoom(), 12 * zoom()));
+
+        QPainterPath path;
+        path.moveTo(leftX, topY);
+        path.lineTo(rightX, topY);
+        // Правая сторона — вогнутая внутрь
+        path.cubicTo(rightX - indent, topY + p_a/3,
+                     rightX - indent, topY + 2*p_a/3,
+                     rightX, bottomY);
+        path.lineTo(leftX, bottomY);
+        // Левая сторона — вогнутая внутрь
+        path.cubicTo(leftX + indent, bottomY - p_a/3,
+                     leftX + indent, topY + p_a/3,
+                     leftX, topY);
+        path.closeSubpath();
+        canvas->drawPath(path);
+
+        QRectF textRect(leftX + 4 * zoom(), topY + 4 * zoom(),
+                        p_b - 8 * zoom(), p_a - 8 * zoom());
+        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, attributes.value("text", ""));
+        canvas->drawLine(QLineF(hcenter, bottomY, hcenter, bottom+0.5));
+      }
+      else if(type() == "document")
+      {
+        /* документ — прямоугольник с волнистым низом */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
+        double leftX = hcenter - p_b/2;
+        double topY = y + 16 * zoom();
+        double rightX = hcenter + p_b/2;
+        double bottomY = topY + p_a;
+
+        canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, topY));
+        QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, topY),
+                                    QSize(6 * zoom(), 12 * zoom()));
+
+        QPainterPath path;
+        path.moveTo(leftX, topY);
+        path.lineTo(rightX, topY);
+        path.lineTo(rightX, bottomY);
+        // Волнистый низ: 6 сегментов (3 волны)
+        double waveW = p_b / 6.0;
+        double waveA = 6 * zoom();
+        for (int i = 0; i < 6; ++i) {
+            double sx = rightX - i * waveW;
+            double ex = rightX - (i + 1) * waveW;
+            double midY = (i % 2 == 0) ? bottomY + waveA : bottomY - waveA;
+            path.quadTo((sx + ex) / 2, midY, ex, bottomY);
+        }
+        path.closeSubpath();
+        canvas->drawPath(path);
+
+        QRectF textRect(leftX + 4 * zoom(), topY + 4 * zoom(),
+                        p_b - 8 * zoom(), p_a - 8 * zoom());
+        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, attributes.value("text", ""));
+        canvas->drawLine(QLineF(hcenter, bottomY, hcenter, bottom+0.5));
+      }
+      else if(type() == "manual_input")
+      {
+        /* ручной ввод — трапеция со скошенным верхом (левая сторона короче) */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
+        double leftX = hcenter - p_b/2;
+        double topY = y + 16 * zoom();
+        double rightX = hcenter + p_b/2;
+        double bottomY = topY + p_a;
+        double slant = p_b * 0.2;
+
+        canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, topY));
+        QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, topY),
+                                    QSize(6 * zoom(), 12 * zoom()));
+
+        QPointF par[4];
+        par[0] = QPointF(leftX + slant, topY);   // верх-левый (смещён вправо)
+        par[1] = QPointF(rightX, topY);           // верх-правый
+        par[2] = QPointF(rightX, bottomY);        // низ-правый
+        par[3] = QPointF(leftX, bottomY);         // низ-левый
+        canvas->drawPolygon(par, 4);
+
+        QRectF textRect(leftX + 4 * zoom(), topY + 4 * zoom(),
+                        p_b - 8 * zoom(), p_a - 8 * zoom());
+        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, attributes.value("text", ""));
+        canvas->drawLine(QLineF(hcenter, bottomY, hcenter, bottom+0.5));
+      }
+      else if(type() == "display")
+      {
+        /* дисплей — параллелограмм (ГОСТ 19.701-90 п.3.1.2.8) */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
+        double topY = y + 16 * zoom();
+
+        canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, topY));
+        QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, topY),
+                                    QSize(6 * zoom(), 12 * zoom()));
+        QPointF par[4];
+        par[0] = QPointF(hcenter - p_b/2 + p_a/4, topY);                       // верх-левый
+        par[1] = QPointF(hcenter + p_b/2 + p_a/4, topY);                       // верх-правый
+        par[2] = QPointF(hcenter + p_b/2 - p_a/4, topY + p_a);                 // низ-правый
+        par[3] = QPointF(hcenter - p_b/2 - p_a/4, topY + p_a);                 // низ-левый
+        canvas->drawPolygon(par, 4);
+        QRectF textRect(hcenter - p_b/2 + p_a/4 + 4 * zoom(), topY + 4 * zoom(),
+                        p_b - p_a/2 - 8 * zoom(), p_a - 8 * zoom());
+        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, attributes.value("text", ""));
+        canvas->drawLine(QLineF(hcenter, topY + p_a, hcenter, bottom+0.5));
+      }
+      else if(type() == "manual_op")
+      {
+        /* ручная операция — трапеция, сужающаяся книзу */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
+        double leftX = hcenter - p_b/2;
+        double topY = y + 16 * zoom();
+        double rightX = hcenter + p_b/2;
+        double bottomY = topY + p_a;
+        double slant = p_b * 0.15;
+
+        canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, topY));
+        QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, topY),
+                                    QSize(6 * zoom(), 12 * zoom()));
+
+        QPointF par[4];
+        par[0] = QPointF(leftX, topY);              // верх-левый
+        par[1] = QPointF(rightX, topY);             // верх-правый
+        par[2] = QPointF(rightX - slant, bottomY);  // низ-правый (уже)
+        par[3] = QPointF(leftX + slant, bottomY);   // низ-левый (уже)
+        canvas->drawPolygon(par, 4);
+
+        QRectF textRect(leftX + 4 * zoom(), topY + 4 * zoom(),
+                        p_b - 8 * zoom(), p_a - 8 * zoom());
+        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, attributes.value("text", ""));
+        canvas->drawLine(QLineF(hcenter, bottomY, hcenter, bottom+0.5));
+      }
+      else if(type() == "parallel")
+      {
+        /* параллельные действия — две горизонтальные линии */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
+        double leftX = hcenter - p_b/2;
+        double topY = y + 16 * zoom();
+        double rightX = hcenter + p_b/2;
+        double bottomY = topY + p_a;
+
+        canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, topY));
+        QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, topY),
+                                    QSize(6 * zoom(), 12 * zoom()));
+
+        double barThick = 6 * zoom();
+        double barY1 = topY + p_a * 0.25;
+        double barY2 = topY + p_a * 0.75;
+
+        canvas->fillRect(QRectF(leftX, barY1 - barThick/2, p_b, barThick), canvas->brush());
+        canvas->drawRect(QRectF(leftX, barY1 - barThick/2, p_b, barThick));
+        canvas->fillRect(QRectF(leftX, barY2 - barThick/2, p_b, barThick), canvas->brush());
+        canvas->drawRect(QRectF(leftX, barY2 - barThick/2, p_b, barThick));
+
+        QRectF textRect(leftX + 4 * zoom(), barY1 + barThick/2 + 2 * zoom(),
+                        p_b - 8 * zoom(), barY2 - barY1 - barThick - 4 * zoom());
+        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, attributes.value("text", ""));
+
+        canvas->drawLine(QLineF(hcenter, bottomY, hcenter, bottom+0.5));
+      }
+      else if(type() == "connector")
+      {
+        /* соединитель — маленький кружок с текстом внутри */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
+        double topY = y + 16 * zoom();
+        double bottomY = topY + p_a;
+        double r = qMin(p_b, p_a) / 2;
+        QRectF circle(hcenter - r, topY + p_a/2 - r, 2*r, 2*r);
+
+        canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, topY));
+        QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, topY),
+                                    QSize(6 * zoom(), 12 * zoom()));
+        canvas->drawEllipse(circle);
+        canvas->drawText(circle, Qt::AlignCenter | Qt::TextWrapAnywhere, attributes.value("text", ""));
+        canvas->drawLine(QLineF(hcenter, topY + p_a/2 + r, hcenter, bottom+0.5));
+      }
+      else if(type() == "ellipsis")
+      {
+        /* пропуск — три точки на горизонтальной линии */
+        double topY = y + 8 * zoom();
+        double p_a = height - topMargin - bottomMargin;
+        double bottomY = topY + p_a;
+        double midY = (topY + bottomY) / 2;
+
+        canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, topY));
+        QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, topY),
+                                    QSize(6 * zoom(), 12 * zoom()));
+
+        // Горизонтальная линия
+        double lineX1 = x + 10 * zoom();
+        double lineX2 = x + width - 10 * zoom();
+        canvas->drawLine(QLineF(lineX1, midY, lineX2, midY));
+
+        // Три точки на линии
+        double dotSpacing = 10 * zoom();
+        double dotR = 2.5 * zoom();
+        for (int i = -1; i <= 1; ++i) {
+            canvas->drawEllipse(QPointF(hcenter + i * dotSpacing, midY), dotR, dotR);
+        }
+
+        canvas->drawLine(QLineF(hcenter, bottomY, hcenter, bottom+0.5));
+      }
+      else if(type() == "ram")
+      {
+        /* ОЗУ — прямоугольник, разделённый вертикальной линией */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
+        double leftX = hcenter - p_b/2;
+        double topY = y + 16 * zoom();
+        double rightX = hcenter + p_b/2;
+        double bottomY = topY + p_a;
+
+        canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, topY));
+        QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, topY),
+                                    QSize(6 * zoom(), 12 * zoom()));
+
+        QRectF rect(leftX, topY, p_b, p_a);
+        canvas->drawRect(rect);
+        // Вертикальная разделительная линия посередине
+        canvas->drawLine(QLineF(hcenter, topY, hcenter, bottomY));
+
+        QRectF textRect(leftX + 4 * zoom(), topY + 4 * zoom(),
+                        p_b - 8 * zoom(), p_a - 8 * zoom());
+        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, attributes.value("text", ""));
+        canvas->drawLine(QLineF(hcenter, bottomY, hcenter, bottom+0.5));
+      }
+      else if(type() == "seq_access")
+      {
+        /* последовательный доступ — круг с хвостиком (Q-образный) */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
+        double topY = y + 16 * zoom();
+        double bottomY = topY + p_a;
+        double cx = hcenter;
+        double cy = topY + p_a/2;
+        double r = qMin(p_b, p_a) / 2;
+
+        canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, topY));
+        QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, topY),
+                                    QSize(6 * zoom(), 12 * zoom()));
+
+        // Круг
+        canvas->drawEllipse(QPointF(cx, cy), r, r);
+
+        // Хвостик (из правой нижней части круга, загибается вверх)
+        QPainterPath tail;
+        tail.moveTo(cx + r * 0.6, cy + r * 0.6);
+        tail.cubicTo(cx + r * 1.4, cy + r * 0.8,
+                     cx + r * 1.4, cy - r * 0.4,
+                     cx + r * 0.5, cy - r * 0.7);
+        canvas->drawPath(tail);
+
+        QRectF textRect(cx - r + 4 * zoom(), topY + 4 * zoom(),
+                        2*r - 8 * zoom(), p_a - 8 * zoom());
+        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, attributes.value("text", ""));
+        canvas->drawLine(QLineF(hcenter, bottomY, hcenter, bottom+0.5));
+      }
+      else if(type() == "direct_access")
+      {
+        /* прямой доступ — цилиндр на боку */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
+        double leftX = hcenter - p_b/2;
+        double topY = y + 16 * zoom();
+        double rightX = hcenter + p_b/2;
+        double bottomY = topY + p_a;
+        double bulge = p_a * 0.15;
+
+        canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, topY));
+        QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, topY),
+                                    QSize(6 * zoom(), 12 * zoom()));
+
+        QPainterPath path;
+        path.moveTo(leftX, topY);
+        path.lineTo(rightX, topY);
+        // Правая выпуклая сторона
+        path.cubicTo(rightX + bulge, topY + p_a/3,
+                     rightX + bulge, topY + 2*p_a/3,
+                     rightX, bottomY);
+        path.lineTo(leftX, bottomY);
+        // Левая выпуклая сторона
+        path.cubicTo(leftX - bulge, bottomY - p_a/3,
+                     leftX - bulge, topY + p_a/3,
+                     leftX, topY);
+        path.closeSubpath();
+        canvas->drawPath(path);
+
+        QRectF textRect(leftX + 4 * zoom(), topY + 4 * zoom(),
+                        p_b - 8 * zoom(), p_a - 8 * zoom());
+        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, attributes.value("text", ""));
+        canvas->drawLine(QLineF(hcenter, bottomY, hcenter, bottom+0.5));
+      }
+      else if(type() == "card")
+      {
+        /* карта — прямоугольник со срезанным левым верхним углом */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
+        double leftX = hcenter - p_b/2;
+        double topY = y + 16 * zoom();
+        double rightX = hcenter + p_b/2;
+        double bottomY = topY + p_a;
+        double cut = p_b * 0.12;
+
+        canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, topY));
+        QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, topY),
+                                    QSize(6 * zoom(), 12 * zoom()));
+
+        QPointF card[5];
+        card[0] = QPointF(leftX + cut, topY);    // после среза
+        card[1] = QPointF(rightX, topY);          // верх-правый
+        card[2] = QPointF(rightX, bottomY);       // низ-правый
+        card[3] = QPointF(leftX, bottomY);        // низ-левый
+        card[4] = QPointF(leftX, topY + cut);     // левый, начало среза
+        canvas->drawPolygon(card, 5);
+
+        QRectF textRect(leftX + 4 * zoom(), topY + 4 * zoom(),
+                        p_b - 8 * zoom(), p_a - 8 * zoom());
+        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, attributes.value("text", ""));
+        canvas->drawLine(QLineF(hcenter, bottomY, hcenter, bottom+0.5));
+      }
+      else if(type() == "paper_tape")
+      {
+        /* бумажная лента — прямоугольник с волнистыми верхом и низом */
+        double p_a = height - topMargin - bottomMargin;
+        double p_b = width - leftMargin - rightMargin;
+        double leftX = hcenter - p_b/2;
+        double topY = y + 16 * zoom();
+        double rightX = hcenter + p_b/2;
+        double bottomY = topY + p_a;
+
+        canvas->drawLine(QLineF(hcenter, y-0.5, hcenter, topY));
+        QFlowChart::drawBottomArrow(canvas, QPointF(hcenter, topY),
+                                    QSize(6 * zoom(), 12 * zoom()));
+
+        QPainterPath path;
+        double waveW = p_b / 6.0;
+        double waveA = 6 * zoom();
+
+        // Верхняя сторона (слева направо) — волнистая
+        path.moveTo(leftX, topY);
+        for (int i = 0; i < 6; ++i) {
+            double sx = leftX + i * waveW;
+            double ex = leftX + (i + 1) * waveW;
+            double midY = (i % 2 == 0) ? topY - waveA : topY + waveA;
+            path.quadTo((sx + ex) / 2, midY, ex, topY);
+        }
+        // Правая сторона вниз
+        path.lineTo(rightX, bottomY);
+        // Нижняя сторона (справа налево) — волнистая
+        for (int i = 0; i < 6; ++i) {
+            double sx = rightX - i * waveW;
+            double ex = rightX - (i + 1) * waveW;
+            double midY = (i % 2 == 0) ? bottomY + waveA : bottomY - waveA;
+            path.quadTo((sx + ex) / 2, midY, ex, bottomY);
+        }
+        path.closeSubpath();
+        canvas->drawPath(path);
+
+        QRectF textRect(leftX + 4 * zoom(), topY + 4 * zoom(),
+                        p_b - 8 * zoom(), p_a - 8 * zoom());
+        canvas->drawText(textRect, Qt::AlignCenter | Qt::TextWrapAnywhere, attributes.value("text", ""));
+        canvas->drawLine(QLineF(hcenter, bottomY, hcenter, bottom+0.5));
       }
 
     }

@@ -39,6 +39,21 @@ APL syntax is inspired by PlantUML but uses C-style braces `{ }` and requires se
       process "loop body";
   }
   call "function_name()";
+  comment "пояснительный текст";
+  data "Данные";
+  stored_data "Запоминаемые данные";
+  document "Документ";
+  manual_input "Ручной ввод";
+  display "Дисплей";
+  manual_op "Ручная операция";
+  parallel "Параллельные действия";
+  connector "A";
+  ellipsis;
+  ram "ОЗУ";
+  seq_access "Лента";
+  direct_access "Диск";
+  card "Карта";
+  paper_tape "Лента";
 @stop_scheme
 ```
 
@@ -48,27 +63,64 @@ When generating APL code, always produce it in a file with `.apl` extension. Inc
 
 ## Block Types (GOST 19.701-90)
 
-| Command | Shape | GOST Section | Purpose |
-|---------|-------|-------------|---------|
+### Символы процесса (Process symbols, §3.2)
+
+| Command | Shape | GOST | Purpose |
+|---------|-------|------|---------|
 | `process "text"` | Rectangle | 3.2.1.1 | General action / operation |
 | `call "func()"` | Rectangle with side bars | 3.2.2.1 | Subroutine / predefined process |
 | `assign x = expr` | Rectangle with `:=` | 3.2.1.1 | Variable assignment |
-| `input vars` | Parallelogram | 3.1.2.5 | Data input (keyboard, etc.) |
-| `output vars` | Parallelogram | 3.1.2.8 | Data output (display, etc.) |
-| `if (cond) { } else { }` | Diamond (decision) | 3.2.2.4 | Branching — labeled "Да"/"Нет" |
+| `if (cond) { } else { }` | Diamond | 3.2.2.4 | Branching — labeled "Да"/"Нет" |
 | `while (cond) { }` | Diamond with loop-back | 3.2.2.6 | Pre-condition loop |
 | `do { } while (cond)` | Diamond with loop-back | 3.2.2.6 | Post-condition loop |
-| `for (i; c; i++) { }` | Diamond with loop-back | 3.2.2.6 | Counter loop |
+| `for (i; c; i++) { }` | Hexagon with loop-back | 3.2.2.6 | Counter loop |
+| `manual_op "text"` | Trapezoid (tapering down) | 3.2.2.2 | Manual operation (human-operated) |
+| `parallel "text"` | Double-bar | 3.2.2.5 | Parallel actions / fork-join |
+
+### Символы данных (Data symbols, §3.1)
+
+| Command | Shape | GOST | Purpose |
+|---------|-------|------|---------|
+| `input vars` | Parallelogram (slanted) | 3.1.2.5 | Data input (keyboard, etc.) |
+| `output vars` | Parallelogram (slanted) | 3.1.2.8 | Data output (display, etc.) |
+| `data "text"` | Parallelogram (right-slant) | 3.1.1.1 | General data |
+| `stored_data "text"` | Hexagon (concave) | 3.1.1.2 | Stored data (database) |
+| `document "text"` | Rectangle with wavy bottom | 3.1.2.4 | Document / report |
+| `manual_input "text"` | Trapezoid (slanted top) | 3.1.2.5 | Manual input (keyboard) |
+| `display "text"` | Parallelogram | 3.1.2.8 | Display / screen output |
+| `ram "text"` | Rectangle with partition | 3.1.2.1 | RAM (random-access memory) |
+| `seq_access "text"` | Circle with tail (tape) | 3.1.2.2 | Sequential access (magnetic tape) |
+| `direct_access "text"` | Cylinder (disk) | 3.1.2.3 | Direct access (magnetic disk) |
+| `card "text"` | Rectangle with cut corner | 3.1.2.6 | Punch card |
+| `paper_tape "text"` | Rectangle with wavy edges | 3.1.2.7 | Paper tape |
+
+### Специальные символы (Special symbols, §3.4)
+
+| Command | Shape | GOST | Purpose |
+|---------|-------|------|---------|
+| `comment "text"` | Bracket `[` + dashed line | 3.4.3 | Annotation / пояснение |
+| `connector "label"` | Circle | 3.4.1 | Connector (page/section break) |
+| `ellipsis` | Three dots `...` | 3.4.4 | Omission / continuation marker |
 
 ## Syntax Rules
 
 1. Every statement must end with `;`.
 2. Block bodies use `{ }` — always required for `if`, `else`, `while`, `do`, `for`.
-3. Comments are `//` (single line only).
-4. Keywords are case-insensitive (`PROCESS "x"` works).
-5. String literals use double quotes `"..."`.
-6. The `@start_scheme` / `@stop_scheme` markers are optional but recommended.
-7. `else if` chains are supported naturally: `if (a) { } else if (b) { } else { }`.
+3. Line comments are `//` (single line only).
+4. `comment "text";` adds a GOST 19.701-90 annotation. Inside **if/else** branches it is drawn as a bracket `[` on the side; in the **main flow** it is an inline block that breaks the vertical line.
+5. Keywords are case-insensitive (`PROCESS "x"` works).
+6. String literals use double quotes `"..."`.
+7. The `@start_scheme` / `@stop_scheme` markers are optional but recommended.
+8. `else if` chains are supported naturally: `if (a) { } else if (b) { } else { }`.
+
+## Dynamic Block Sizing
+
+All blocks resize automatically based on their text content:
+- **process**, **assign**, **predefined**, **io**, **ou**, **data**, **stored_data**, **document**, **manual_input**, **display**, **manual_op**, **parallel**, **ram**, **seq_access**, **direct_access**, **card**, **paper_tape**: width and height adapt to text length
+- **predefined** (call): text placed strictly between vertical side bars
+- **comment**: in **if/else** branches — side annotation (bracket `[`, does not expand branch vertically); in **center flow** — inline block (breaks the line, occupies vertical space, centered)
+- **connector** and **ellipsis**: sized to fit label
+- If text is too long, add `comment "...";` per GOST 3.4.3
 
 ## Converting from C/C++ Code
 
@@ -83,6 +135,7 @@ When converting a function to APL:
 7. Replace `printf(...)` → `output text;`
 8. Replace assignments `x = y;` → `assign x = y;`
 9. Replace other statements → `process "text representation";`
+10. If text is too long for a block, append `comment "explanation";` after it
 
 Focus on the **control flow logic** — you don't need to translate every single line literally. Group related operations into descriptive `process` blocks.
 
@@ -122,6 +175,20 @@ Produce:
       }
       output "Result: " + result;
   }
+@stop_scheme
+```
+
+### Using comments for long text (GOST 19.701-90, p. 3.4.3):
+
+The comment is drawn as a `[` bracket connected to the block by a dashed line:
+```
+[Блок] - - - -[ Текст комментария ]
+```
+
+```apl
+@start_scheme
+  process "Сложная операция";
+  comment "Детальное описание того, что делает эта операция";
 @stop_scheme
 ```
 
